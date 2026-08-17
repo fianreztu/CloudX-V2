@@ -45,10 +45,40 @@ class Moviebox : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val body = mapOf("keyword" to query, "page" to "1", "perPage" to "0", "subjectType" to "0")
+        // Try API first with a non-zero perPage (perPage=0 often yields empty results)
+        val body = mapOf("keyword" to query, "page" to 1, "perPage" to 12, "subjectType" to 0)
             .toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
-        return app.post("$mainUrl/wefeed-h5-bff/web/subject/search", requestBody = body)
-            .parsedSafe<Media>()?.data?.items?.map { it.toSearchResponse(this) } ?: throw ErrorLoadingException()
+
+        val apiResponse = try {
+            app.post("$mainUrl/wefeed-h5-bff/web/subject/search", requestBody = body, referer = mainUrl)
+                .parsedSafe<Media>()
+        } catch (e: Exception) {
+            null
+        }
+
+        val items = apiResponse?.data?.items
+        if (!items.isNullOrEmpty()) {
+            return items.map { it.toSearchResponse(this) }
+        }
+
+        // Fallback: HTML search if API returns nothing or fails
+        return try {
+            val document = app.get("$mainUrl?s=$query&post_type[]=post&post_type[]=tv", referer = mainUrl).document
+            document.select("article.item, article.item-infinite").mapNotNull { el ->
+                val title = el.selectFirst("h2.entry-title > a")?.text()?.trim() ?: return@mapNotNull null
+                val href = fixUrl(el.selectFirst("h2.entry-title > a")?.attr("href") ?: return@mapNotNull null)
+                val img = el.selectFirst("a > img") ?: el.selectFirst("div.content-thumbnail img")
+                val poster = img?.attr("abs:data-src").takeIf { !it.isNullOrBlank() }
+                    ?: img?.attr("abs:data-lazy-src").takeIf { !it.isNullOrBlank() }
+                    ?: img?.attr("abs:src").takeIf { !it.isNullOrBlank() }
+
+                newMovieSearchResponse(title, href, TvType.Movie) {
+                    this.posterUrl = poster
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -133,7 +163,7 @@ class Moviebox : MainAPI() {
             @JsonProperty("streams") val streams: ArrayList<Streams>? = arrayListOf(),
             @JsonProperty("captions") val captions: ArrayList<Captions>? = arrayListOf()
         ) {
-            data class Streams(@JsonProperty("id") val id: String? = null, @JsonProperty("format") val format: String? = null, @JsonProperty("url") val url: String? = null, @JsonProperty("resolutions") val resolutions: String? = null)
+            data class Streams(@JsonProperty("id") val id: String? = null, @JsonProperty("format") val format: String? = null, @JsonProperty("url") val url: String? = null, @JsonProperty("resolut[...] )
             data class Captions(@JsonProperty("lan") val lan: String? = null, @JsonProperty("lanName") val lanName: String? = null, @JsonProperty("url") val url: String? = null)
         }
     }
